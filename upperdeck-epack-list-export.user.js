@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Upper Deck e-Pack: CSV Export (Collection + Checklist; Remote Serial Rules)
 // @namespace    https://github.com/jacobsfootmib-ux/upperdeck-epack-export
-// @version      1.5.0
+// @version      1.5.1
 // @description  Export e-Pack Collection (DOM tooltips) and Checklist (rules-only) to CSV; Serial via community-hosted rules.json.
 // @author       jacobsfootmib-ux
 // @license      MIT
@@ -18,7 +18,6 @@
   "use strict";
 
   // ========= Remote rules config =========
-  // Make sure this points to the RAW file URL of rules.json in the repo:
   const RULES_URL = "https://raw.githubusercontent.com/jacobsfootmib-ux/upperdeck-epack-export/main/rules.json";
   const RULES_CACHE_KEY = "epack_serial_rules_v1";
   // =======================================
@@ -38,7 +37,7 @@
     serial: /serial|numbered/i,
   };
 
-  // Rarity/Parallel keyword inference (expand as needed)
+  // Rarity/Parallel keyword inference (expand as you like)
   const RARITY_WORDS = [
     "Young Guns","Canvas","Fabrics","Retro","Insert","Parallel","Legends",
     "Authentic Rookies","Checklist","Spectrum","Rainbow","Gold","Blue","Green","Red",
@@ -265,27 +264,67 @@
     }
 
     const allEls = Array.from(rowEl.querySelectorAll("*"));
+
+    // Numbers from tooltips/aria
     const qtyTxt  = getByKeyFromEls(allEls, KEYS.qty);
     const subjTxt = getByKeyFromEls(allEls, KEYS.subj);
     let combTxt   = getByKeyFromEls(allEls, KEYS.combine);
-    if (combTxt == null || combTxt === "") {
-      // fall back to 0 when not combinable
-      combTxt = "0";
+    if (combTxt == null || combTxt === "") combTxt = "0";
+
+    // NEW: icon/tooltips → Physical / Locked / Wishlist
+    const physEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.physical));
+    const lockEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.locked));
+    const wishEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.wishlist));
+
+    // Normalize Physical
+    let physical = "";
+    if (physEl) {
+      const al = (getAttr(physEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const txt = (physEl.textContent || "").trim();
+      if (/pending/.test(al) || /pending/.test(txt)) physical = "Pending";
+      else if (/yes|green|physical/.test(al)) physical = "Yes";
+      else if (txt === "✓") physical = PHYSICAL_CHECKMARK_MEANS_YES ? "Yes" : "No";
+      else physical = "No";
     }
 
-    // (Physical/Locked/Wishlist often icon-only; skip unless needed)
-    // Normalize numeric fields
+    // Normalize Locked
+    let locked = "";
+    if (lockEl) {
+      const al = (getAttr(lockEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const txt = (lockEl.textContent || "").trim();
+      const cls = (lockEl.className || "").toLowerCase();
+      if (/locked/.test(al) && /on|yes|true|1/.test(al)) locked = "Yes";
+      else if (/unlock|off|false|0/.test(al)) locked = "No";
+      else if (/locked/.test(cls)) locked = "Yes";
+      else if (txt === "1") locked = "Yes";
+      else if (txt === "0") locked = "No";
+      else locked = "No";
+    }
+
+    // Normalize Wishlist
+    let wishlist = "";
+    if (wishEl) {
+      const al = (getAttr(wishEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const txt = (wishEl.textContent || "").trim();
+      const cls = (wishEl.className || "").toLowerCase();
+      if (/remove.*wishlist|wishlisted|on|true|filled|heart/.test(al) || /active|filled|heart/.test(cls) || /♥/.test(txt)) {
+        wishlist = "Yes";
+      } else {
+        wishlist = "No";
+      }
+    }
+
+    // Numeric cleanup
     const toInt = (x) => {
       const m = asStr(x).match(/\d+/);
       return m ? parseInt(m[0], 10) : "";
     };
-
     const qty = toInt(qtyTxt);
     const subjPoints = toInt(subjTxt);
     const combineNeed = toInt(combTxt);
 
     const raw = (rowEl.textContent || "").replace(/\s+\n/g, " ").replace(/\s{2,}/g," ").trim();
-    return { rowEl, cardNo, title, qty, subjPoints, combineNeed, raw };
+    return { rowEl, cardNo, title, qty, subjPoints, combineNeed, physical, locked, wishlist, raw };
   }
 
   function parseGroupsCollection() {
@@ -332,10 +371,10 @@
           Qty: r.qty,
           SubjPoints: r.subjPoints,
           CombineNeeded: r.combineNeed,
-          Physical: "",   // icon-only in many cases; omitted in collection mode export for stability
-          Locked: "",
-          Wishlist: "",
-          Serial: serialByRule, // rules-based (no OCR here)
+          Physical: r.physical,       // included again
+          Locked: r.locked,           // included again
+          Wishlist: r.wishlist,       // included again
+          Serial: serialByRule,       // via rules.json
           RawText: `${set}${subset?(" - "+subset):""} | ${r.raw}`
         });
       }
@@ -400,7 +439,6 @@
   function parseGroupsChecklist() {
     const groups = guessGroupsChecklist();
     if (!groups.length) return [];
-
     const out = [];
     for (const groupEl of groups) {
       const { set, subset, year } = extractHeaderFromGroup(groupEl);
@@ -500,4 +538,3 @@
 
   ensureButton();
 })();
-
