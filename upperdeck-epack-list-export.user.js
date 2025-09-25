@@ -1,219 +1,552 @@
 // ==UserScript==
-// @name         Upper Deck e-Pack: List-View CSV Export (Group Parser)
-// @namespace    https://github.com/<jacobsfootmib-ux>/upperdeck-epack-export
-// @version      1.0.0
-// @description  Export e-Pack collection from List view (.group) to CSV
+// @name         Upper Deck e-Pack: CSV Export (Collection + Checklist; Remote Serial Rules)
+// @namespace    https://github.com/jacobsfootmib-ux/YOUR_REPO
+// @version      1.5.0
+// @description  Export e-Pack Collection (DOM tooltips) and Checklist (rules-only) to CSV; Serial via community-hosted rules.json.
+// @author       jacobsfootmib-ux
+// @license      MIT
+// @homepageURL  https://github.com/jacobsfootmib-ux/YOUR_REPO
+// @supportURL   https://github.com/jacobsfootmib-ux/YOUR_REPO/issues
+// @downloadURL  https://raw.githubusercontent.com/jacobsfootmib-ux/YOUR_REPO/main/upperdeck-epack-export.user.js
+// @updateURL    https://raw.githubusercontent.com/jacobsfootmib-ux/YOUR_REPO/main/upperdeck-epack-export.user.js
 // @match        https://www.upperdeckepack.com/*
 // @run-at       document-idle
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/<jacobsfootmib-ux>/upperdeck-epack-export/main/upperdeck-epack-list-export.user.js
-// @downloadURL  https://raw.githubusercontent.com/<jacobsfootmib-ux>/upperdeck-epack-export/main/upperdeck-epack-list-export.user.js
 // ==/UserScript==
 
 (function () {
   "use strict";
 
-  // ---------- UI ----------
-  function ensureButton() {
-    if (document.getElementById("epackExportBtn")) return;
-    const btn = document.createElement("button");
-    btn.id = "epackExportBtn";
-    btn.textContent = "Export ePack CSV";
-    Object.assign(btn.style, {
-      position: "fixed",
-      right: "16px",
-      bottom: "16px",
-      zIndex: 2147483647,
-      padding: "10px 14px",
-      borderRadius: "10px",
-      border: "none",
-      background: "#1a73e8",
-      color: "#fff",
-      fontWeight: "600",
-      boxShadow: "0 4px 14px rgba(0,0,0,0.2)",
-      cursor: "pointer",
-      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-    });
-    btn.addEventListener("click", runExport);
-    (document.body || document.documentElement).appendChild(btn);
+  // ========= Remote rules config (EDIT THESE 2 LINES) =========
+  const RULES_URL = "https://raw.githubusercontent.com/jacobsfootmib-ux/YOUR_REPO/main/rules.json";
+  const RULES_CACHE_KEY = "epack_serial_rules_v1";
+  // ============================================================
 
-    // status toast
-    if (!document.getElementById("epackExportStatus")) {
-      const s = document.createElement("div");
-      s.id = "epackExportStatus";
-      Object.assign(s.style, {
-        position: "fixed",
-        right: "16px",
-        bottom: "64px",
-        zIndex: 2147483647,
-        background: "rgba(0,0,0,0.75)",
-        color: "#fff",
-        padding: "10px 12px",
-        borderRadius: "10px",
-        maxWidth: "360px",
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-        fontSize: "13px",
-        lineHeight: "1.3",
-        display: "none",
-        whiteSpace: "pre-wrap",
-      });
-      (document.body || document.documentElement).appendChild(s);
+  // ---------------------- Shared behavior toggles ----------------------
+  const WAIT_MS = 700, IDLE_LIMIT = 12, MAX_PASSES = 5, SCROLL_STEP = 0.9;
+  const PHYSICAL_CHECKMARK_MEANS_YES = false;
+
+  // Tooltip/aria matching (case-insensitive)
+  const KEYS = {
+    qty: /qty\s*owned/i,
+    subj: /subject\s*points?/i,
+    combine: /(combine|qty\s*needed\s*to\s*combine|needed\s*to\s*combine|to\s*combine|combine\s*needed|pieces\s*needed)/i,
+    physical: /physical/i,
+    locked: /locked/i,
+    wishlist: /wishlist|heart/i,
+    serial: /serial|numbered/i,
+  };
+
+  // Rarity/Parallel keyword inference (expand as you like)
+  const RARITY_WORDS = [
+    "Young Guns","Canvas","Fabrics","Retro","Insert","Parallel","Legends",
+    "Authentic Rookies","Checklist","Spectrum","Rainbow","Gold","Blue","Green","Red",
+    "Exclusive","FX","Ice","Debut","Rookie","Jersey","Materials","Patch","Die-Cut",
+    "HOF Marks","Banner Year","Net Cord","New Grooves","Rookie Sweaters","All-Star","Mascot",
+    "Black","Purple","Orange","Teal","Silver","Bronze"
+  ];
+  const RARITY_RX = new RegExp(RARITY_WORDS.join("|").replace(/ /g,"\\s*"), "i");
+
+  // ---------------------- Local fallback rules ----------------------
+  const LOCAL_FALLBACK_RULES = {
+    version: "fallback",
+    display: "unknownNumerator", // "unknownNumerator" => "?/DENOM", "denomOnly" => "/DENOM"
+    rules: {
+      // Seed examples; community will extend in rules.json
+      "2024-25 SP Game Used Hockey|Gold": "149",
+      "2024-25 SP Game Used Hockey|Blue": "99",
+      "2024-25 SP Game Used Hockey|Green": "25",
+      "2024-25 SP Game Used Hockey|Purple": "10",
+      "2024-25 SP Game Used Hockey|Black": "1"
+    }
+  };
+
+  // ---------------------- Remote rules state ----------------------
+  let SERIAL_RULES_REMOTE = null; // {version, display, rules:{ "set|rarity": "denom", ... }}
+  function loadRulesFromCache() {
+    try {
+      const raw = localStorage.getItem(RULES_CACHE_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (obj && obj.rules && typeof obj.rules === "object") return obj;
+    } catch {}
+    return null;
+  }
+  async function fetchRulesFresh() {
+    const url = RULES_URL + (RULES_URL.includes("?") ? "&" : "?") + "_ts=" + Date.now();
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("Rules fetch failed: " + res.status);
+    const json = await res.json();
+    if (!json || typeof json !== "object" || !json.rules) throw new Error("Bad rules format");
+    return json;
+  }
+  async function ensureRulesLoaded() {
+    SERIAL_RULES_REMOTE = loadRulesFromCache();
+    try {
+      const fresh = await fetchRulesFresh();
+      SERIAL_RULES_REMOTE = fresh;
+      localStorage.setItem(RULES_CACHE_KEY, JSON.stringify(fresh));
+    } catch (e) {
+      if (!SERIAL_RULES_REMOTE) SERIAL_RULES_REMOTE = LOCAL_FALLBACK_RULES;
+      console.warn("[ePack Export] Using cached/fallback rules:", e);
     }
   }
+
+  // ---------------------- Utils ----------------------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const asStr = (v) => (v == null ? "" : String(v));
+  const isInt = (s) => /^\d+$/.test(asStr(s));
+  const hasLetters = (s) => /[A-Za-z]/.test(asStr(s));
+  const csvEscape = (v) => {
+    const s = asStr(v).replace(/\r?\n|\r/g, " ").trim();
+    return /[",]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const getAttr = (el, names) => {
+    for (const n of names) { const v = el.getAttribute?.(n); if (v) return v; }
+    return "";
+  };
+  const matchesAny = (text, ...regexes) => regexes.some(rx => rx.test(text));
+  const normKey = (set, rarity) => `${asStr(set).trim().toLowerCase()}|${asStr(rarity).trim().toLowerCase()}`;
+
   function setStatus(txt) {
-    const s = document.getElementById("epackExportStatus");
-    if (!s) return;
-    s.textContent = txt;
+    let s = document.getElementById("epackExportStatus");
+    if (!s) {
+      s = document.createElement("div");
+      s.id = "epackExportStatus";
+      Object.assign(s.style, {
+        position: "fixed", right: "16px", bottom: "64px", zIndex: 2147483647,
+        background: "rgba(0,0,0,0.75)", color: "#fff", padding: "10px 12px",
+        borderRadius: "10px", maxWidth: "420px",
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+        fontSize: "13px", lineHeight: "1.3", display: "none", whiteSpace: "pre-wrap",
+      });
+      document.body.appendChild(s);
+    }
+    s.textContent = txt || "";
     s.style.display = txt ? "block" : "none";
   }
 
-  // ---------- helpers ----------
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  function csvEscape(v) {
-    if (v == null) return "";
-    const s = String(v).replace(/\r?\n|\r/g, " ").trim();
-    return /[",]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  function ensureButton() {
+    if (document.getElementById("epackExportBtn")) return;
+    const btn = document.createElement("button");
+    btn.id = "epackExportBtn"; btn.textContent = "Export ePack CSV";
+    Object.assign(btn.style, {
+      position: "fixed", right: "16px", bottom: "16px", zIndex: 2147483647,
+      padding: "10px 14px", borderRadius: "10px", border: "none",
+      background: "#1a73e8", color: "#fff", fontWeight: "600",
+      boxShadow: "0 4px 14px rgba(0,0,0,0.2)", cursor: "pointer",
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+    });
+    btn.addEventListener("click", runExport);
+    document.body.appendChild(btn);
   }
+
   function isScrollable(el) {
-    if (!el || !(el instanceof HTMLElement)) return false;
+    if (!el) return false;
     const st = getComputedStyle(el);
     return /(auto|scroll)/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 20;
   }
-  function biggestScroller() {
+  function findBestScroller() {
     const docEl = document.scrollingElement || document.documentElement;
-    let best = docEl, bestArea = docEl.clientWidth * docEl.clientHeight;
-    document.querySelectorAll("*").forEach((el) => {
-      try {
-        if (isScrollable(el)) {
-          const area = el.clientWidth * el.clientHeight;
-          if (area > bestArea) { best = el; bestArea = area; }
+    if (isScrollable(docEl)) return docEl;
+    const candidate = document.querySelector(".content, .main, #root");
+    return candidate && isScrollable(candidate) ? candidate : docEl;
+  }
+
+  // ---------------------- Infinite scroll loader (Collection) ----------------------
+  async function loadAllByInfiniteScroll() {
+    const sc = findBestScroller();
+    const sig = () => `${document.querySelectorAll(".group").length}:${sc.scrollHeight}`;
+    let prev = "";
+    for (let pass = 1; pass <= MAX_PASSES; pass++) {
+      let idle = 0, last = "";
+      setStatus(`Loading cards… pass ${pass}/${MAX_PASSES}`);
+      for (;;) {
+        const target = Math.floor(sc.scrollHeight * SCROLL_STEP);
+        sc.scrollTo({ top: target, behavior: "instant" });
+        sc.scrollTop = sc.scrollHeight;
+        await sleep(WAIT_MS);
+        const now = sig();
+        if (now === last) { if (++idle >= IDLE_LIMIT) break; }
+        else { idle = 0; last = now; }
+      }
+      const now2 = sig();
+      if (now2 === prev) break;
+      prev = now2;
+      sc.scrollTop = Math.max(0, sc.scrollTop - sc.clientHeight);
+      await sleep(WAIT_MS);
+    }
+    setStatus("Finalizing load…");
+    sc.scrollTop = sc.scrollHeight;
+    await sleep(WAIT_MS * 2);
+  }
+
+  // ---------------------- Mode detection ----------------------
+  function isChecklistPage() {
+    const url = location.pathname.toLowerCase();
+    if (url.includes("/checklist")) return true;
+    // Heuristics: page marker classes/attributes
+    if (document.querySelector('[data-page="checklist"], .checklist, .check-list, [data-checklist]')) return true;
+    // If there are clear “Checklist” headings in the body
+    const bodyText = (document.body.innerText || "").toLowerCase();
+    if (/checklist/.test(bodyText) && !/my collection|qty owned/i.test(bodyText)) return true;
+    return false;
+  }
+
+  // ---------------------- Collection-mode row extraction ----------------------
+  function findRowContainer(el, stopEl) {
+    while (el && el !== stopEl && el !== document.body) {
+      const role = el.getAttribute?.("role") || "";
+      const cls = el.className ? String(el.className) : "";
+      const tag = el.tagName || "";
+      if (role === "row" ||
+          /(^|\s)(row|group-item|item|card|list-row|collection-row)(\s|$)/i.test(cls) ||
+          tag === "LI" || tag === "TR") return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+  function tokensFromNode(root, show = NodeFilter.SHOW_TEXT) {
+    const out = [];
+    const walker = document.createTreeWalker(root, show, null);
+    let n;
+    while ((n = walker.nextNode())) {
+      const t = (n.textContent || "").trim();
+      if (t) t.split("\n").map(s => s.trim()).filter(Boolean).forEach(s => out.push(s));
+    }
+    return out;
+  }
+  function getByKeyFromEls(els, rxKey) {
+    const el = els.find(e => matchesAny((getAttr(e, ["data-tooltip","aria-label","title"]) || ""), rxKey));
+    if (!el) return null;
+    const txt = (el.textContent || "").trim();
+    if (txt) return txt;
+    const fallback = getAttr(el, ["data-value","data-count"]) || "";
+    return fallback || null;
+  }
+  function inferRarity(set, subset, title) {
+    const src = [subset, title, set].map(asStr).join(" • ");
+    const m = src.match(RARITY_RX);
+    return m ? m[0].replace(/\s+/g, " ").trim() : "";
+  }
+  function serialFromRules(set, rarity) {
+    const rulesObj = SERIAL_RULES_REMOTE || LOCAL_FALLBACK_RULES;
+    if (!set || !rarity || !rulesObj || !rulesObj.rules) return "";
+    const key = normKey(set, rarity);
+    const hit = Object.entries(rulesObj.rules).find(([k]) => k.trim().toLowerCase() === key);
+    if (!hit) return "";
+    const denom = String(hit[1]).trim();
+    const displayMode = (rulesObj.display || "unknownNumerator");
+    return displayMode === "denomOnly" ? `/${denom}` : `?/${denom}`;
+  }
+
+  function rowFromQtySpan(qtySpan, groupEl) {
+    const rowEl = findRowContainer(qtySpan, groupEl) || qtySpan.closest("*");
+    if (!rowEl) return null;
+
+    const toks = tokensFromNode(rowEl);
+    // Card # = first pure integer; Title = next token with letters
+    let cardNo = "", title = "";
+    for (let i=0;i<toks.length;i++) {
+      if (isInt(toks[i])) {
+        cardNo = toks[i];
+        for (let j=i+1;j<toks.length;j++) {
+          if (hasLetters(toks[j])) { title = toks[j]; break; }
         }
-      } catch (_) {}
-    });
-    return best;
-  }
-
-  // ---------- scrolling + parsing ----------
-  async function scrollAllGroups() {
-    const sc = biggestScroller();
-    let prev = 0, idle = 0;
-    while (idle < 6) {
-      sc.scrollTo(0, sc.scrollHeight);
-      await sleep(900);
-      const now = document.querySelectorAll(".group").length;
-      if (now > prev) { prev = now; idle = 0; setStatus(`Loading groups… (${now} visible)`); }
-      else idle++;
+        break;
+      }
     }
+
+    const allEls = Array.from(rowEl.querySelectorAll("*"));
+
+    const qtyTxt  = getByKeyFromEls(allEls, KEYS.qty);
+    const subjTxt = getByKeyFromEls(allEls, KEYS.subj);
+    let combTxt   = getByKeyFromEls(allEls, KEYS.combine);
+
+    if (combTxt == null || combTxt === "") {
+      const nums = toks.filter(t => isInt(t)).map(n => parseInt(n,10));
+      if (nums.length >= 3) {
+        const pos = (nums[0] == parseInt(cardNo,10)) ? 3 : 2;
+        combTxt = Number.isInteger(nums[pos]) ? String(nums[pos]) : "0";
+      } else {
+        combTxt = "0";
+      }
+    }
+
+    const physEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.physical));
+    const lockEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.locked));
+    const wishEl = allEls.find(e => matchesAny(getAttr(e, ["data-tooltip","aria-label","title"]) || "", KEYS.wishlist));
+
+    // Normalize Physical
+    let physical = "No";
+    if (physEl) {
+      const al = (getAttr(physEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const txt = (physEl.textContent || "").trim();
+      if (/pending/.test(al) || /pending/.test(txt)) physical = "Pending";
+      else if (/yes|green/.test(al)) physical = "Yes";
+      else if (txt === "✓") physical = PHYSICAL_CHECKMARK_MEANS_YES ? "Yes" : "No";
+    }
+
+    // Locked normalize
+    let locked = "No";
+    if (lockEl) {
+      const al = (getAttr(lockEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const txt = (lockEl.textContent || "").trim();
+      if (/locked/.test(al) && /on|yes|true|1/.test(al)) locked = "Yes";
+      else if (/unlock/.test(al)) locked = "No";
+      else if (txt === "1") locked = "Yes";
+      else if (txt === "0") locked = "No";
+    }
+
+    // Wishlist normalize
+    let wishlist = "No";
+    if (wishEl) {
+      const al = (getAttr(wishEl, ["aria-label","data-tooltip","title"]) || "").toLowerCase();
+      const cls = (wishEl.className || "").toLowerCase();
+      const txt = (wishEl.textContent || "").trim();
+      if (/remove.*wishlist|wishlisted|on|true|filled/.test(al) || /active|filled/.test(cls) || /♥/.test(txt)) {
+        wishlist = "Yes";
+      }
+    }
+
+    // Numeric cleanup
+    const toInt = (x) => {
+      const m = asStr(x).match(/\d+/);
+      return m ? parseInt(m[0], 10) : "";
+    };
+    const qty = toInt(qtyTxt);
+    const subjPoints = toInt(subjTxt);
+    const combineNeed = toInt(combTxt);
+
+    const raw = (rowEl.textContent || "").replace(/\s+\n/g, " ").replace(/\s{2,}/g," ").trim();
+    return { rowEl, cardNo, title, qty, subjPoints, combineNeed, physical, locked, wishlist, raw };
   }
 
-  // Parse a .group section:
-  // Header lines until first pure number; then repeating blocks of:
-  // [card #] → [title line] → [detail lines] → next [card #]
-  function parseGroup(groupEl) {
-    const lines = (groupEl.innerText || "")
-      .split("\n").map((s) => s.trim()).filter(Boolean);
-    if (!lines.length) return [];
+  // ---------------------- Collection-mode: parse groups ----------------------
+  function parseGroupsCollection() {
+    const groups = Array.from(document.querySelectorAll(".group"));
+    if (!groups.length) return [];
 
-    let firstNumIdx = lines.findIndex((s) => /^\d+$/.test(s));
-    if (firstNumIdx === -1) firstNumIdx = lines.length;
+    const rowsOut = [];
+    for (const groupEl of groups) {
+      // Header = set/subset from the top part before the first number
+      const allTextTokens = (groupEl.innerText || "").split("\n").map(s => s.trim()).filter(Boolean);
+      let h = 0; while (h < allTextTokens.length && !isInt(allTextTokens[h])) h++;
+      const header = allTextTokens.slice(0, h).join(" ");
+      let set = header, subset = "";
+      if (set.includes(" - ")) {
+        const parts = set.split(" - ");
+        set = parts.shift().trim();
+        subset = parts.join(" - ").trim();
+      }
+      const seasonMatch = set.match(/\b(20\d{2}|19\d{2})(?:-\d{2})?\b/);
+      const year = seasonMatch ? seasonMatch[0] : "";
 
-    const header = lines.slice(0, firstNumIdx).join(" ");
+      // Find row anchors via Qty tooltip
+      const qtySpans = Array.from(groupEl.querySelectorAll('[data-tooltip]'))
+        .filter(el => KEYS.qty.test(el.getAttribute('data-tooltip') || ""));
+
+      const seen = new Set();
+      for (const q of qtySpans) {
+        const r = rowFromQtySpan(q, groupEl);
+        if (!r) continue;
+        if (!r.cardNo || !r.title) continue;
+        if (seen.has(r.rowEl)) continue;
+        seen.add(r.rowEl);
+
+        const rarity = inferRarity(set, subset, r.title);
+        const serialByRule = serialFromRules(set, rarity);
+
+        rowsOut.push({
+          Title: r.title,
+          Set: set,
+          "Subset/Insert": subset,
+          "Card #": r.cardNo,
+          Year: year,
+          "Rarity/Parallel": rarity,
+          Qty: r.qty,
+          SubjPoints: r.subjPoints,
+          CombineNeeded: r.combineNeed,
+          Physical: r.physical,
+          Locked: r.locked,
+          Wishlist: r.wishlist,
+          Serial: serialByRule, // rules-based (no OCR here)
+          RawText: `${set}${subset?(" - "+subset):""} | ${r.raw}`
+        });
+      }
+    }
+    return rowsOut;
+  }
+
+  // ---------------------- Checklist-mode parsing (rules-only) ----------------------
+  // Checklist pages typically don't have ownership/lock/wishlist info.
+  // We read Set/Subsets from section headers, then per-item rows we extract: Card #, Title, Rarity/Parallel (from text),
+  // and fill Serial from rules. Qty/SubjPoints/Combine/Physical/Locked/Wishlist stay blank (or "0" for Combine).
+  function guessGroupsChecklist() {
+    // Try to find obvious group containers; fall back to large sections with headings
+    const candidates = Array.from(document.querySelectorAll(
+      ".group, .checklist-group, section, .accordion, .list, .cards, .content"
+    ));
+    // Prioritize ones that contain many list items
+    return candidates.filter(el => (el.innerText || "").split("\n").filter(Boolean).length > 10);
+  }
+
+  function extractHeaderFromGroup(groupEl) {
+    // Take the first few text tokens before hitting an obvious number to form Set/Subset
+    const toks = tokensFromNode(groupEl, NodeFilter.SHOW_TEXT);
+    let h = 0; while (h < toks.length && !/^\d+$/.test(toks[h])) h++;
+    const header = toks.slice(0, h).join(" ").replace(/\s{2,}/g," ").trim();
     let set = header, subset = "";
-    const dashIdx = header.indexOf(" - ");
-    if (dashIdx !== -1) {
-      set = header.slice(0, dashIdx).trim();
-      subset = header.slice(dashIdx + 3).trim();
+    if (set.includes(" - ")) {
+      const parts = set.split(" - ");
+      set = parts.shift().trim();
+      subset = parts.join(" - ").trim();
     }
+    const seasonMatch = set.match(/\b(20\d{2}|19\d{2})(?:-\d{2})?\b/);
+    const year = seasonMatch ? seasonMatch[0] : "";
+    return { set, subset, year };
+  }
+
+  function findChecklistRowCandidates(groupEl) {
+    // Prefer role=row or obvious list rows
+    let rows = Array.from(groupEl.querySelectorAll('[role="row"], li, tr, .row, .checklist-item, .item'));
+    if (!rows.length) {
+      // As a fallback, split on smaller blocks that contain a number + letters
+      rows = Array.from(groupEl.children);
+    }
+    return rows;
+  }
+
+  function parseChecklistRow(rowEl) {
+    const toks = tokensFromNode(rowEl);
+    // Card # = first pure integer
+    let cardNo = "";
+    let title = "";
+    for (let i=0;i<toks.length;i++) {
+      if (/^\d+$/.test(toks[i])) {
+        cardNo = toks[i];
+        // Title: next token with letters (allow hyphens/dots for names like "Stützle")
+        for (let j=i+1;j<toks.length;j++) {
+          if (/[A-Za-z]/.test(toks[j])) { title = toks[j]; break; }
+        }
+        break;
+      }
+    }
+    // Sometimes checklist lines put everything on one line: try joining slice after cardNo
+    if (!title && cardNo) {
+      const after = toks.slice(toks.findIndex(t => t===cardNo)+1).join(" ").trim();
+      const m = after.match(/[A-Za-z].*$/);
+      if (m) title = m[0].trim();
+    }
+
+    const raw = (rowEl.innerText || "").replace(/\s+\n/g," ").replace(/\s{2,}/g," ").trim();
+    return { cardNo, title, raw };
+  }
+
+  function parseGroupsChecklist() {
+    const groups = guessGroupsChecklist();
+    if (!groups.length) return [];
 
     const out = [];
-    let i = firstNumIdx;
-    while (i < lines.length) {
-      if (!/^\d+$/.test(lines[i])) { i++; continue; }
-      const cardNo = lines[i]; i++;
+    for (const groupEl of groups) {
+      const { set, subset, year } = extractHeaderFromGroup(groupEl);
 
-      // Find a plausible title (next non-numeric, non-✓ line)
-      let title = "";
-      while (i < lines.length) {
-        const s = lines[i];
-        if (/[a-z]/i.test(s) && !/^\d+$/.test(s) && s !== "✓") { title = s; i++; break; }
-        i++;
+      // Heuristic filter: ignore tiny groups that are just nav blocks
+      const rowEls = findChecklistRowCandidates(groupEl).filter(el => (el.innerText || "").trim().length > 10);
+
+      const seenRows = new Set();
+      for (const rowEl of rowEls) {
+        const { cardNo, title, raw } = parseChecklistRow(rowEl);
+        if (!cardNo || !title) continue;
+
+        // Avoid duplicates if the same DOM row is selected twice
+        if (seenRows.has(rowEl)) continue;
+        seenRows.add(rowEl);
+
+        // Infer rarity from set/subset/title text
+        const rarity = (function(){
+          const src = [subset, title, set].join(" • ");
+          const m = src.match(RARITY_RX);
+          return m ? m[0].replace(/\s+/g," ").trim() : "";
+        })();
+
+        const serialByRule = serialFromRules(set, rarity);
+
+        out.push({
+          Title: title,
+          Set: set,
+          "Subset/Insert": subset,
+          "Card #": cardNo,
+          Year: year,
+          "Rarity/Parallel": rarity,
+          // Checklist mode: ownership fields unknown/absent
+          Qty: "",
+          SubjPoints: "",
+          CombineNeeded: "0",   // sensible default; checklist typically doesn’t list combine
+          Physical: "",
+          Locked: "",
+          Wishlist: "",
+          Serial: serialByRule, // rules-only
+          RawText: `${set}${subset?(" - "+subset):""} | ${raw}`
+        });
       }
-
-      // Details until next numeric card number
-      const detailStart = i;
-      while (i < lines.length && !/^\d+$/.test(lines[i])) i++;
-      const details = lines.slice(detailStart, i);
-
-      const qty = (details.find((t) => /^\d+$/.test(t)) || "") || "";
-      const serial = ((details.join(" ").match(/#\s*\d+\s*\/\s*\d+/) || [""])[0] || "").replace(/\s+/g, "");
-      const rarity = details.find((s) =>
-        /(Parallel|Gold|Blue|Green|Red|Canvas|Retro|FX|Exclusive|Auto|Patch|Die-?Cut|Spectrum|Rainbow)/i.test(s)
-      ) || "";
-      const yearMatch = set.match(/\b(20\d{2}|19\d{2})\b/);
-      const year = yearMatch ? yearMatch[1] : "";
-
-      out.push({
-        title,
-        set,
-        subset_or_insert: subset,
-        card_number: cardNo,
-        year,
-        rarity_or_parallel: rarity,
-        quantity: qty,
-        serial,
-        raw: `${header} | ${details.join(" | ")}`,
-      });
     }
     return out;
   }
 
+  // ---------------------- CSV writer ----------------------
   function downloadCSV(rows) {
     const headers = [
-      "Title","Set","Subset/Insert","Card #","Year",
-      "Rarity/Parallel","Quantity","Serial","RawText"
+      "Title","Set","Subset/Insert","Card #","Year","Rarity/Parallel",
+      "Qty","SubjPoints","CombineNeeded","Physical","Locked","Wishlist","Serial","RawText"
     ];
     const lines = [headers.join(",")];
-    for (const r of rows) {
-      lines.push([
-        r.title, r.set, r.subset_or_insert, r.card_number, r.year,
-        r.rarity_or_parallel, r.quantity, r.serial, r.raw
-      ].map(csvEscape).join(","));
-    }
+    for (const r of rows) lines.push(headers.map(h => csvEscape(r[h] ?? "")).join(","));
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `epack_collection_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download = `epack_${isChecklistPage() ? "checklist" : "collection"}_${new Date().toISOString().slice(0,10)}.csv`;
     document.body.appendChild(a); a.click(); a.remove();
   }
 
+  // ---------------------- Orchestrator ----------------------
   async function runExport() {
     const btn = document.getElementById("epackExportBtn");
     try {
-      if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
-      setStatus("Scanning list view groups…");
-      await scrollAllGroups();
+      btn.disabled = true;
+      setStatus("Fetching rules…");
+      await ensureRulesLoaded();
 
-      const groups = Array.from(document.querySelectorAll(".group"));
-      if (!groups.length) { setStatus("No '.group' sections found—are you in List view?"); alert("No '.group' sections found."); return; }
+      const checklist = isChecklistPage();
 
-      setStatus(`Parsing ${groups.length} groups…`);
-      const items = groups.flatMap(parseGroup).filter((r) => r.title || r.card_number);
-      if (!items.length) { setStatus("Parsed groups but found 0 cards—layout changed?"); alert("No cards parsed—layout may differ."); return; }
+      if (!checklist) {
+        setStatus("Scrolling collection…");
+        await loadAllByInfiniteScroll();
+      }
+
+      setStatus(`Parsing ${checklist ? "checklist" : "collection"}…`);
+      const items = checklist ? parseGroupsChecklist() : parseGroupsCollection();
+
+      if (!items.length) {
+        alert(`No cards parsed in ${checklist ? "checklist" : "collection"} view—try switching views and re-run.`);
+        return;
+      }
 
       downloadCSV(items);
       setStatus(`Exported ${items.length} rows ✓`);
     } catch (e) {
       console.error(e);
-      setStatus("Export failed—see console for details.");
-      alert("Export failed. See console for details.");
+      alert("Export failed—see console for details.");
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "Export ePack CSV"; }
-      setTimeout(() => setStatus(""), 4000);
+      btn.disabled = false;
+      document.getElementById("epackExportBtn").textContent = "Export ePack CSV";
+      setTimeout(() => setStatus(""), 5000);
     }
   }
 
-  // Keep the button present even if the SPA rerenders the page
-  const obs = new MutationObserver(() => ensureButton());
-  obs.observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(() => {
+    if (!document.getElementById("epackExportBtn")) ensureButton();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
   ensureButton();
 })();
