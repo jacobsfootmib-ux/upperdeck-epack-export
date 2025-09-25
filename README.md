@@ -5,12 +5,12 @@ A Tampermonkey userscript to export your **Upper Deck e-Pack** collection from *
 ## Install
 1. Install the [Tampermonkey extension](https://www.tampermonkey.net/).
 2. Click this link to install the script:  
-   [Install Script](https://raw.githubusercontent.com/<your-username>/upperdeck-epack-export/main/upperdeck-epack-list-export.user.js)
+   [Install Script](https://raw.githubusercontent.com/jacobsfootmib-ux/upperdeck-epack-export/main/upperdeck-epack-list-export.user.js)
 
 ## Usage
 - Go to [upperdeckepack.com](https://www.upperdeckepack.com/).
 - Navigate to **My Collection → List view**.
-- Click the floating **“Export ePack CSV”** button.
+- Click the floating **“Export ePack CSV”** button on the bottom right of the screen.
 - The script will scroll through all groups, parse them, and download a CSV of your collection.
 
 ## Notes
