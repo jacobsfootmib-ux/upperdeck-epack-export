@@ -6,6 +6,8 @@
 // @match        https://www.upperdeckepack.com/*
 // @run-at       document-idle
 // @grant        none
+// @downloadURL https://raw.githubusercontent.com/jacobsfootmib-ux/upperdeck-epack-export/main/upperdeck-epack-export.user.js
+// @updateURL   https://raw.githubusercontent.com/jacobsfootmib-ux/upperdeck-epack-export/main/upperdeck-epack-export.user.js
 // ==/UserScript==
 
 (function () {
