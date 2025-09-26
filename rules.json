@@ -1,11 +1,71 @@
 {
-  "version": "2025-09-24",
+  "version": "2025-09-26",
   "display": "unknownNumerator",
+  "notes": "Keys use 'Set Name|Rarity'. Denominators are strings. Mode 'unknownNumerator' displays '?/DENOM'; set to 'denomOnly' to display '/DENOM'.",
   "rules": {
     "2024-25 SP Game Used Hockey|Gold": "149",
     "2024-25 SP Game Used Hockey|Blue": "99",
     "2024-25 SP Game Used Hockey|Green": "25",
     "2024-25 SP Game Used Hockey|Purple": "10",
-    "2024-25 SP Game Used Hockey|Black": "1"
+    "2024-25 SP Game Used Hockey|Black": "1",
+
+    "2024-25 SP Game Used Hockey|Red": "",
+    "2024-25 SP Game Used Hockey|Orange": "",
+    "2024-25 SP Game Used Hockey|Silver": "",
+    "2024-25 SP Game Used Hockey|Bronze": "",
+
+    "2024-25 Upper Deck Series 2 Hockey|Speckled Rainbow Foil": "",
+    "2024-25 Upper Deck Series 2 Hockey|Purple": "",
+    "2024-25 Upper Deck Series 2 Hockey|Gold Outburst": "",
+    "2024-25 Upper Deck Series 2 Hockey|Outburst": "",
+    "2024-25 Upper Deck Series 2 Hockey|High Gloss": "",
+    "2024-25 Upper Deck Series 2 Hockey|Clear Cut": "",
+
+    "2024-25 Upper Deck Extended Series|Gold": "",
+    "2024-25 Upper Deck Extended Series|Outburst": "",
+    "2024-25 Upper Deck Extended Series|High Gloss": "",
+    "2024-25 Upper Deck Extended Series|Clear Cut": "",
+
+    "2023-24 Ultimate Collection|Gold": "",
+    "2023-24 Ultimate Collection|Platinum": "",
+    "2023-24 Ultimate Collection|Shield": "",
+
+    "2023-24 NHL E-X 2000|Essential Credentials Now": "",
+    "2023-24 NHL E-X 2000|Essential Credentials Future": "",
+    "2023-24 NHL E-X 2000|Rubies": "",
+    "2023-24 NHL E-X 2000|Emerald": "",
+
+    "2023-24 CHL SP Game Used|Gold": "",
+    "2023-24 CHL SP Game Used|Blue": "",
+    "2023-24 CHL SP Game Used|Green": "",
+    "2023-24 CHL SP Game Used|Purple": "",
+    "2023-24 CHL SP Game Used|Black": "",
+
+    "2023-24 Fleer Ultra Hockey|Gold Medallion": "",
+    "2023-24 Fleer Ultra Hockey|Platinum Medallion": "",
+    "2023-24 Fleer Ultra Hockey|Ultra Stars": "",
+
+    "2024 Skybox Metal Universe Champions|PMG Red": "",
+    "2024 Skybox Metal Universe Champions|PMG Green": "",
+    "2024 Skybox Metal Universe Champions|Jambalaya": "",
+    "2024 Skybox Metal Universe Champions|Gold": "",
+
+    "2024 Goodwin Champions|Gold": "",
+    "2024 Goodwin Champions|Lenticular": "",
+    "2024 Goodwin Champions|Goudey Auto": "",
+
+    "2024 Team Canada Juniors|Purple Patterned Foilboard": "",
+    "2024 Team Canada Juniors|Outburst": "",
+    "2024 Team Canada Juniors|Clear Cut": "",
+
+    "2024 AEW Allure|Sunrise": "",
+    "2024 AEW Allure|Orange Slice Die-Cut": "",
+    "2024 AEW Allure|Seismic": "",
+    "2024 AEW Allure|Black Diamond": "",
+
+    "Fleer Scooby-Doo|Parallel": "",
+    "2025 Game Dated Moments|Gold": "",
+    "James Bond Black Diamond|Red Spectrum": "",
+    "James Bond Black Diamond|Gold Spectrum": ""
   }
 }
